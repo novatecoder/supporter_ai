@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  # PostgreSQL: 인격/상태 영구 저장
+  postgres:
+    image: postgres:15-alpine
+    container_name: supporter_postgres
+    ports: ["5432:5432"]
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: supporter_db
+
+  # Redis: 단기 기억 및 감정 캐시
+  redis:
+    image: redis/redis-stack:latest
+    container_name: supporter_redis
+    ports: 
+      - "6379:6379"  # Redis 데이터 포트
+      - "8001:8001"  # RedisInsight 대시보드 (웹에서 데이터 확인 가능)
+    # environment:
+    #   - REDIS_ARGS=--requirepass "" # 비밀번호 없이 내부망 사용 시
+  # Neo4j: 지식 그래프 (관계망)
+  neo4j:
+    image: neo4j:5.15
+    container_name: supporter_neo4j
+    ports: ["7474:7474", "7687:7687"]
+    environment:
+      NEO4J_AUTH: neo4j/password
+
+  # Qdrant: Vector DB (장기 에피소드 기억)
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: supporter_qdrant
+    ports: ["6333:6333"]
+
+  # vLLM: Qwen2-VL (Multimodal + Korean + low VRAM)
+  vllm:
+    image: vllm/vllm-openai:latest
+    container_name: supporter_vllm
+    runtime: nvidia
+    shm_size: '2gb'
+    ports: ["8000:8000"]
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - NCCL_P2P_DISABLE=1
+      - VLLM_USE_V1=0
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    command: >
+      cyankiwi/Qwen3-VL-4B-Instruct-AWQ-4bit
+      --quantization compressed-tensors 
+      --dtype float16
+      --gpu-memory-utilization 0.6
+      --max-model-len 2048
+      --trust-remote-code
+      --enforce-eager
+      --limit-mm-per-prompt '{"image": 1}'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

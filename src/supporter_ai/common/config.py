@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     APP_PORT: int = 8000
     DEBUG: bool = False
 
+    # [Sensory - STT]
+    WHISPER_MODEL_NAME: str = "base"
+    WHISPER_DEVICE: str = "cuda"
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
 settings = Settings()

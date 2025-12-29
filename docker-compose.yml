@@ -44,7 +44,6 @@ services:
     environment:
       - CUDA_VISIBLE_DEVICES=0
       - NCCL_P2P_DISABLE=1
-      - VLLM_USE_V1=0
     volumes:
       - ~/.cache/huggingface:/root/.cache/huggingface
     command: >
@@ -56,10 +55,3 @@ services:
       --trust-remote-code
       --enforce-eager
       --limit-mm-per-prompt '{"image": 1}'
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]

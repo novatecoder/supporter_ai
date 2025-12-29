@@ -5,6 +5,15 @@ class Settings(BaseSettings):
     VLLM_URL: str
     LLM_MODEL_NAME: str
 
+    # 에러 방지를 위한 헬퍼 프로퍼티
+    @property
+    def LLM_BASE_URL(self) -> str:
+        return self.VLLM_URL
+
+    @property
+    def LLM_API_KEY(self) -> str:
+        return "EMPTY"
+
     # Database
     POSTGRES_URL: str
     REDIS_HOST: str

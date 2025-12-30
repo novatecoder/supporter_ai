@@ -47,11 +47,10 @@ services:
     volumes:
       - ~/.cache/huggingface:/root/.cache/huggingface
     command: >
-      cyankiwi/Qwen3-VL-4B-Instruct-AWQ-4bit
-      --quantization compressed-tensors 
+      Qwen/Qwen2.5-7B-Instruct-AWQ
+      --quantization awq
       --dtype float16
       --gpu-memory-utilization 0.6
       --max-model-len 2048
-      --trust-remote-code
       --enforce-eager
-      --limit-mm-per-prompt '{"image": 1}'
+      --disable-log-requests

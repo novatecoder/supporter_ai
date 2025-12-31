@@ -1,34 +1,71 @@
+
 # [SDS] 서포터 AI (Supporter AI) 상세 설계서
 
-## 1. 시스템 아키텍처 (Headless Brain & Sensory App)
+## 1. 시스템 아키텍처 (Hybrid Orchestrator Brain)
 
-본 시스템은 감정(Emotion)과 이성(Reason)이 분리된 복합 뇌 구조를 서버에 두고, 사용자와의 실시간 소통을 담당하는 감각(Sensory) 및 표현(Expression) 기능을 클라이언트(앱)로 분리한 구조를 지향합니다. 모든 통신은 표준화된 JSON을 통해 이루어집니다.
+본 시스템은 감정(Emotion)과 이성(Reason)이 상호작용하는 **하이브리드 오케스트레이터** 구조를 채택합니다. 사용자가 기능을 제어할 수 있으며, AI는 자신의 가용 능력을 인지하고 이에 맞춰 대화(티키타카)를 진행합니다.
 
-### 1.1 상태 관리 및 분석 흐름
-* **JSON Interface**: 클라이언트가 STT를 통해 텍스트화된 입력과 센서 데이터를 JSON으로 전송하면, 서버는 이를 처리하여 답변과 상태 정보를 JSON으로 반환합니다.
-* **Decoupled Logic**: 입력이 들어오면 **감정 노드**가 먼저 반응하여 AI의 내부 상태를 변화시키고, **뇌 노드**가 그 상태를 바탕으로 말투와 내용을 결정합니다.
-* **Hybrid Memory**: Redis(단기/감정), PostgreSQL(인격/성장), Neo4j(관계), Vector DB(경험)를 단계적으로 결합합니다.
+### 1.1 노드 유형 정의
 
-## 2. 데이터베이스 및 심리 모델 설계
+1. **Code Node**: 데이터 로드/저장, 외부 API 호출 등 정해진 로직을 수행하는 순수 파이썬 노드.
+2. **Logic Node (Base Model)**: 의도 분석, 추론, 정보 인지 후 감정 수치 계산을 담당하는 논리 노드.
+3. **LoRA Node (Persona Model)**: 결정된 상태를 바탕으로 혈액형별 말투와 페르소나를 입히는 표현 노드.
 
-### 2.1 4단계 레이어 메모리 (Redis + SQL + Graph + Vector)
-1. **Redis (Short-term)**: 현재 대화의 기분(Mood), '킹받음' 지수, 최근 대화 맥락.
-2. **PostgreSQL (Persona)**:
-    * **Big5**: 외향성, 친화성 등 기본 성격 수치.
-    * **교류분석(TA)**: 부모(P), 성인(A), 아이(C) 자아 상태 수치.
-    * **다크 트라이어드**: 자기주장 및 독설 수위 조절용.
-3. **Neo4j (Knowledge Graph)**: 사용자 주변 인물, 선호도, 싫어하는 것(장난 소재).
-4. **Vector DB (Episodic)**: 과거의 중요한 사건 및 학습된 지식.
+## 2. 인지-감정 워크플로우 (Cognitive-Emotional Loop)
 
-## 3. 멀티 에이전트 노드 구성 (LangGraph & App)
+AI는 정보를 습득함에 따라 실시간으로 기분이 변화하며, 이는 다음 대화에 즉각 반영됩니다.
 
-| 위치 | 노드/기능 | 역할 및 세부 로직 |
-| --- | --- | --- |
-| **App** | **Sensory (STT)** | 마이크 입력 -> Whisper 엔진 -> 텍스트 JSON 전송. |
-| **Server** | **Input Node** | 클라이언트 JSON 수신 및 데이터 필터링. |
-| **Server** | **Emotional Node** | 실시간 기분 수치 업데이트 및 LoRA 어댑터 결정. |
-| **Server** | **Brain Node** | **(강화 대상)** 결정된 감정과 혈액형 성격 수치를 조합해 답변 생성. |
-| **Server** | **Summarize Node** | 2048 토큰 제한 준수를 위한 기억 압축 및 요약. |
-| **Server** | **Sensory Tools** | 구글 검색, 시스템 모니터링, 비전 분석 기능. |
-| **Server** | **Reflection Node** | 사용자 반응 분석 및 인격 수치 미세 조정. |
-| **App** | **Expression (TTS)** | 서버 응답 JSON 수신 -> Edge-TTS 엔진 -> 음성 출력. |
+1. **Sensory Analyzer**: 사용자의 입력(텍스트/파일)과 의도를 분석합니다.
+2. **Brain Orchestrator**: 이성적으로 판단하여 도구(검색 등) 사용 여부를 결정합니다. 기능이 꺼져 있을 경우 이를 인지하고 사용자에게 요청합니다.
+3. **Tool Execution & Gateway**: 실제로 도구를 실행합니다. 사용자가 비활성화한 도구는 시스템 레벨에서 차단됩니다.
+4. **Dynamic Emotion Update**: 도구 실행 결과(예: 검색된 정보의 내용)를 보고 "기쁨", "놀람" 등의 감정 수치를 업데이트합니다.
+5. **Expression Node (LoRA Apply)**: 혈액형 플래그(A, B, O, AB)에 따라 LoRA 어댑터를 적용하여 최종 페르소나 답변을 생성합니다.
+
+## 3. 계층형 메모리 시스템 (Memory Layer)
+
+* **Redis (Short-term)**: 최근 대화 맥락 및 요약본 저장.
+* **PostgreSQL (Persona)**: 혈액형 및 사용자 환경 설정 저장.
+* **Neo4j (Knowledge Graph)**: 사용자 주변 인물 및 사실 관계 저장.
+* **Vector DB (Episodic)**: 과거의 중요한 사건 및 경험 저장.
+
+## 4. 데이터 인터페이스 규격 (API JSON)
+
+### 4.1 Input Packet (확장형)
+
+```json
+{
+  "user_id": "kwh_01",
+  "input_text": "이 케이크 뭐야? 진짜 이쁘다!",
+  "input_files": [],
+  "enabled_tools": ["stt", "tts", "google_search"]
+}
+
+```
+
+### 4.2 Output Packet (구조화된 출력)
+
+```json
+{
+  "response": {
+    "text": "우와, 진짜네! 검색해 보니까 이건 딸기 생크림 케이크래. 너무 맛있어 보여서 나도 기분이 좋아졌어!",
+    "emotion": {
+      "type": "happy",
+      "intensity": 0.9,
+      "visual_hint": "heart_eyes"
+    },
+    "action": {
+      "command": "none",
+      "params": {}
+    }
+  },
+  "metadata": {
+    "blood_type": "A",
+    "thought_process": "사용자가 케이크를 언급함 -> 검색 결과 확인 -> 긍정적 정보 인지 -> 기쁨 수치 상승"
+  }
+}
+
+```
+
+## 5. 자가 피드백 (Background Reflection)
+
+답변이 사용자에게 전달된 후, 백그라운드 노드에서 방금의 발화가 설정된 혈액형 페르소나와 감정 상태에 적절했는지 스스로 평가하여 메모리에 피드백을 기록합니다.

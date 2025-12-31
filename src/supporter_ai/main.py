@@ -1,8 +1,9 @@
 import traceback
 import uvicorn
+import time
 from contextlib import asynccontextmanager
 from typing import Dict, Any, List, Optional
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from loguru import logger
 
@@ -14,6 +15,7 @@ app_state: Dict[str, Any] = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """서버 시작 시 랭그래프 엔진 로딩"""
     try:
         logger.info("🚀 Supporter AI 하이브리드 엔진 로딩 중...")
         # 랭그래프 워크플로우 생성 및 컴파일
@@ -36,13 +38,28 @@ class ChatRequest(BaseModel):
     enabled_tools: Optional[List[str]] = []        # 활성화 도구 플래그
     disabled_tools: Optional[List[str]] = []
 
+async def run_post_processing(graph, state: Dict[str, Any]):
+    """
+    요약(Summarize), 저장(Save), 성찰(Reflection) 등 무거운 작업을 
+    사용자에게 응답을 보낸 뒤 백그라운드에서 처리하기 위한 함수입니다.
+    현재 workflow 구조상 ainvoke 내부에서 순차적으로 실행되지만, 
+    로그를 통해 실행 여부를 모니터링합니다.
+    """
+    try:
+        # 요약 노드가 실행되었는지 로그 확인
+        summary = state.get("summary", "")
+        if summary:
+            logger.info(f"✅ 백그라운드 요약 완료: {summary[:30]}...")
+    except Exception as e:
+        logger.error(f"❌ 사후 처리 중 오류 발생: {e}")
+
 @app.post("/api/v1/chat")
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest, background_tasks: BackgroundTasks):
     graph = app_state.get("graph")
     if not graph:
         raise HTTPException(status_code=503, detail="시스템 로딩 중")
 
-    # 그래프 시작 상태 설정 (state.py 규격 준수)
+    # 그래프 시작 상태 설정
     initial_state = {
         "input_text": req.message,
         "user_id": req.user_id,
@@ -50,26 +67,34 @@ async def chat(req: ChatRequest):
         "blood_type": req.blood_type,
         "enabled_tools": req.enabled_tools,
         "disabled_tools": req.disabled_tools,
-        "messages": [] # load_memory_node에서 채워질 예정
+        "messages": [] # load_memory_node에서 Redis 데이터로 채워짐
     }
 
     try:
-        # 랭그래프 실행
-        final_state = await graph.ainvoke(initial_state)
+        # 1. 랭그래프 실행
+        # [참고] 현재 workflow 구조상 save_memory까지 일직선으로 실행됩니다.
+        # recursion_limit을 50으로 늘려 루프 에러를 방지합니다.
+        final_state = await graph.ainvoke(
+            initial_state, 
+            config={"recursion_limit": 50}
+        )
         
-        # [수정 포인트] expression_node에서 생성된 'final_output'을 추출
-        # response 필드가 비어있지 않도록 확실하게 매핑합니다.
+        # 2. 결과 추출
         ai_response = final_state.get("final_output")
         
-        # 만약 어떤 이유로든 final_output이 없으면 방어적으로 생성
+        # 방어적 코드: 응답이 없는 경우
         if not ai_response or not isinstance(ai_response, dict):
             ai_response = {
-                "text": "미안해, 대답을 완성하지 못했어. 다시 말해줄래?",
+                "text": "미안해, 대답을 준비하는 중에 문제가 생겼어. 다시 말해줄래?",
                 "emotion": "sad",
                 "action": "none"
             }
 
-        # 클라이언트 디버깅용 메타데이터 구성
+        # 3. 백그라운드 작업 등록
+        # 요약 및 성찰 결과가 포함된 상태를 백그라운드 로그에 남깁니다.
+        background_tasks.add_task(run_post_processing, graph, final_state)
+
+        # 4. 클라이언트 디버깅용 메타데이터 구성
         metadata = {
             "blood_type": final_state.get("blood_type"),
             "mood": final_state.get("mood_state"),
@@ -82,7 +107,7 @@ async def chat(req: ChatRequest):
         # 성공 응답 반환
         return {
             "status": "success", 
-            "response": ai_response,  # 이 데이터가 demo_app의 메시지로 출력됨
+            "response": ai_response,
             "metadata": metadata
         }
         

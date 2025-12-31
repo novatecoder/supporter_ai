@@ -12,7 +12,7 @@ class SupporterState(TypedDict):
     
     # 2. 입력 및 메모리
     input_text: str
-    messages: Annotated[List[BaseMessage], operator.add]
+    messages: List[BaseMessage]
     summary: str
     
     # 3. 중간 분석 결과 (Logic 노드들이 생성)

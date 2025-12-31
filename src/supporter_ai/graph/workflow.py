@@ -6,13 +6,12 @@ from supporter_ai.graph.nodes.tools.memory import (
 )
 from supporter_ai.graph.nodes.tools.gateway import tool_gateway_node
 from supporter_ai.graph.nodes.brain.reasoning import (
-    sensory_node, orchestrator_node, emotion_node, expression_node, reflection_node
-)
+    sensory_node, orchestrator_node, emotion_node, expression_node
+) # reflection_node 제거
 
 async def create_supporter_workflow():
     workflow = StateGraph(SupporterState)
 
-    # 1. 모든 노드 등록
     workflow.add_node("load_memory", load_memory_node)
     workflow.add_node("sensory_analyze", sensory_node)
     workflow.add_node("orchestrator", orchestrator_node)
@@ -21,10 +20,9 @@ async def create_supporter_workflow():
     workflow.add_node("expression", expression_node)
     workflow.add_node("update_history", update_history_node)
     workflow.add_node("summarize", summarize_node)
-    workflow.add_node("reflection", reflection_node)
-    workflow.add_node("save_memory", save_memory_node) # 마지막에 저장
+    workflow.add_node("save_memory", save_memory_node) 
 
-    # 2. 엣지 연결
+    # 엣지 연결
     workflow.add_edge(START, "load_memory")
     workflow.add_edge("load_memory", "sensory_analyze")
     workflow.add_edge("sensory_analyze", "orchestrator")
@@ -36,12 +34,11 @@ async def create_supporter_workflow():
     )
     workflow.add_edge("tool_gateway", "orchestrator")
     
-    # [중요] 답변 생성 -> 기록 업데이트 -> 요약 -> 성찰 -> 저장 순서
+    # 수정된 흐름: summarize -> save_memory 바로 연결
     workflow.add_edge("emotion_update", "expression")
     workflow.add_edge("expression", "update_history")
     workflow.add_edge("update_history", "summarize")
-    workflow.add_edge("summarize", "reflection")
-    workflow.add_edge("reflection", "save_memory")
+    workflow.add_edge("summarize", "save_memory") # reflection 생략
     workflow.add_edge("save_memory", END)
 
     return workflow.compile()

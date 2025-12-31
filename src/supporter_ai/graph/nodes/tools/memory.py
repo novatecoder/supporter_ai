@@ -32,27 +32,24 @@ async def update_history_node(state: SupporterState):
     return {"messages": messages + [new_user_msg, new_ai_msg]}
 
 async def summarize_node(state: SupporterState):
-    """임계값 초과 시 요약 수행 및 메시지 리스트 비우기"""
     messages = state.get("messages", [])
-    
-    # 10개 이하일 때는 실행 안 함 (이때 디버그 로그가 안 찍힐 수 있음)
     if len(messages) <= 10:
         return {}
 
-    logger.info(f"🚀 메시지 {len(messages)}개 도달. 요약을 시작합니다.")
     llm = get_llm(temperature=0.1)
-    existing_summary = state.get("summary", "")
-    
-    summary_prompt = f"""너는 기억 관리자야. 토큰 제한을 위해 정보를 압축해.
-[기존 요약]: {existing_summary}
-[최신 대화]: {messages[:-4]}
-지침: 이름과 핵심 취향은 절대 빼지 말고 200자 내외로 업데이트해."""
+    # Prompt Diet: 핵심 정보 위주 압축
+    sys = "기억 압축기. 한국어만 사용. 중국어 금지"
+    prompt = f"""기존요약: {state.get("summary", "")}
+추가내용: {messages[:-4]}
+지침: 이름, 취향 등 팩트 위주로 100자 내 압축."""
 
-    res = await llm.ainvoke([SystemMessage(content="기억 압축 엔진"), HumanMessage(content=summary_prompt)])
+    # 여기서도 중국어 체크 적용
+    from supporter_ai.graph.nodes.brain.reasoning import safe_llm_call
+    logger.warning(f"⚠️ summarize_node 시도 중...")
+    content = await safe_llm_call(llm, [SystemMessage(content=sys), HumanMessage(content=prompt)])
     
-    # 요약본을 갱신하고, 메시지 리스트는 최근 4개만 남겨서 '비워줌' (토큰 확보)
     return {
-        "summary": res.content.strip(),
+        "summary": content.strip(),
         "messages": messages[-4:] 
     }
 

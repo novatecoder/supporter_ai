@@ -34,7 +34,6 @@ services:
     container_name: supporter_qdrant
     ports: ["6333:6333"]
 
-  # vLLM: Qwen2-VL (Multimodal + Korean + low VRAM)
   vllm:
     image: vllm/vllm-openai:latest
     container_name: supporter_vllm
@@ -47,10 +46,11 @@ services:
     volumes:
       - ~/.cache/huggingface:/root/.cache/huggingface
     command: >
-      Qwen/Qwen2.5-7B-Instruct-AWQ
+      LGAI-EXAONE/EXAONE-3.5-7.8B-Instruct-AWQ
       --quantization awq
       --dtype float16
-      --gpu-memory-utilization 0.6
+      --gpu-memory-utilization 0.7
       --max-model-len 2048
       --enforce-eager
       --disable-log-requests
+      --trust-remote-code

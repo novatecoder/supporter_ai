@@ -17,5 +17,6 @@ async def tool_gateway_node(state: SupporterState):
     
     return {
         "search_results": mock_result,
-        "tool_required": False # 실행 완료 후 루프 탈출을 위해 False로 설정
+        "tool_required": False,
+        "retry_count": state.get("retry_count", 0) + 1 # 카운트 증가 추가
     }

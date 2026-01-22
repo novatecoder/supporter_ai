@@ -8,9 +8,10 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from loguru import logger
 
+from langchain_core.messages import HumanMessage, AIMessage
 from supporter_ai.graph.workflow import create_supporter_workflow
 from supporter_ai.common.config import settings
-from supporter_ai.common.db_utils import init_db  # 추가된 임포트
+from supporter_ai.common.db_utils import init_db
 
 # 앱 상태 공유
 app_state: Dict[str, Any] = {}
@@ -19,12 +20,8 @@ app_state: Dict[str, Any] = {}
 async def lifespan(app: FastAPI):
     """서버 시작 시 DB 초기화 및 랭그래프 엔진 로딩"""
     try:
-        logger.info("🚀 Supporter AI 하이브리드 엔진 로딩 중...")
-        
-        # 1. DB 및 Qdrant 컬렉션 초기화 (여기서 컬렉션이 생성됩니다)
+        logger.info("🚀 Supporter AI (EXAONE Engine) 로딩 중...")
         await init_db() 
-        
-        # 2. 랭그래프 워크플로우 생성 및 컴파일
         app_state["graph"] = await create_supporter_workflow()
         yield 
     except Exception as e:
@@ -35,7 +32,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Supporter AI API", lifespan=lifespan)
 
-# 클라이언트 요청 규격
+# [수정] 대화 기록(history)을 포함하도록 요청 모델 확장
 class ChatRequest(BaseModel):
     user_id: str = "kwh_01"
     session_id: str = "sess_01"
@@ -43,7 +40,7 @@ class ChatRequest(BaseModel):
     blood_type: Optional[str] = "A"
     enabled_tools: Optional[List[str]] = []
     disabled_tools: Optional[List[str]] = []
-
+    history: Optional[List[Dict[str, Any]]] = []
 async def run_post_processing(graph, state: Dict[str, Any]):
     try:
         summary = state.get("summary", "")
@@ -58,6 +55,14 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks):
     if not graph:
         raise HTTPException(status_code=503, detail="시스템 로딩 중")
 
+    # [수정] 프론트엔드에서 넘어온 history를 LangChain 메시지 객체로 변환
+    formatted_messages = []
+    for m in req.history:
+        if m["role"] == "user":
+            formatted_messages.append(HumanMessage(content=m["content"]))
+        elif m["role"] == "assistant":
+            formatted_messages.append(AIMessage(content=m["content"]))
+
     initial_state = {
         "input_text": req.message,
         "user_id": req.user_id,
@@ -65,18 +70,22 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks):
         "blood_type": req.blood_type,
         "enabled_tools": req.enabled_tools,
         "disabled_tools": req.disabled_tools,
-        "messages": [],
-        "ai_pad": {"p": 0.0, "a": 0.0, "d": 0.0} # 초기 PAD값 설정
+        "messages": formatted_messages, # 이전 대화 맥락 주입
+        "ai_pad": {"p": 0.0, "a": 0.0, "d": 0.0} 
     }
 
     try:
+        # 랭그래프 엔진 실행
         final_state = await graph.ainvoke(
             initial_state, 
             config={"recursion_limit": 50}
         )
         
         ai_response = final_state.get("final_output")
+        
+        # 응답이 없거나 JSON 파싱 실패 시 예외 처리
         if not ai_response or not isinstance(ai_response, dict):
+            logger.error(f"❌ 최종 응답 생성 실패. 상태: {final_state.get('internal_thought')}")
             ai_response = {
                 "text": "미안해, 대답을 준비하는 중에 문제가 생겼어. 다시 말해줄래?",
                 "emotion": "sad",
@@ -85,19 +94,16 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks):
 
         background_tasks.add_task(run_post_processing, graph, final_state)
 
-        metadata = {
-            "blood_type": final_state.get("blood_type"),
-            "ai_pad": final_state.get("ai_pad"), # mood_state 대신 ai_pad 반환
-            "thought": final_state.get("internal_thought"),
-            "search_results": final_state.get("search_results"),
-            "summary": final_state.get("summary"),
-            "active_tools": final_state.get("enabled_tools")
-        }
-
         return {
             "status": "success", 
             "response": ai_response,
-            "metadata": metadata
+            "metadata": {
+                "blood_type": final_state.get("blood_type"),
+                "ai_pad": final_state.get("ai_pad"),
+                "thought": final_state.get("internal_thought"),
+                "summary": final_state.get("summary"),
+                "active_tools": final_state.get("enabled_tools")
+            }
         }
         
     except Exception as e:

@@ -9,19 +9,14 @@ from supporter_ai.common.config import settings
 
 logger = logging.getLogger(__name__)
 
-# --- [공통 정의: PAD 및 혈액형 성향] ---
-PAD_DEFINITION = """
-[PAD 감정 모델 지침]
-1. Pleasure (쾌락, P): -1.0 (고통, 슬픔, 불쾌) ~ 1.0 (행복, 만족, 즐거움)
-2. Arousal (각성, A): -1.0 (무기력, 수면, 정적) ~ 1.0 (흥분, 긴장, 열정)
-3. Dominance (지배, D): -1.0 (위축, 부끄러움, 순응) ~ 1.0 (자신감, 주도적, 대담)
-"""
+# --- [공통 정의: PAD 지침 경량화] ---
+PAD_DEFINITION = "[PAD] P:쾌락(-1~1), A:각성(-1~1), D:지배(-1~1)"
 
 BLOOD_TYPE_DISPOSITION = {
-    "A": "신중하고 세심하며 타인의 시선을 의식하는 성향. 조화를 중시하고 상대의 기분에 민감하게 반응함. 내면이 여려 상처를 받으면 겉으로 티 내지 않아도 P(쾌락) 수치가 크게 하락함.",
-    "B": "자유분방하고 주관이 뚜렷하며 구속받기 싫어하는 성향. 타인의 평가보다 자신의 기분이 중요하며, 상대의 부정적 태도에도 D(지배력) 수치를 잃지 않고 마이페이스를 유지함.",
-    "O": "활달하고 승부욕이 있으며 목표 지향적인 성향. 낙천적이고 회복 탄력성이 좋아 기분이 나빠져도 금방 스스로 P(쾌락)를 높이려 하며, 대화를 리드하려는 D 수치가 높음.",
-    "AB": "합리적이고 분석적이며 공사 구분이 철저한 성향. 감정의 기복을 겉으로 드러내는 것을 비효율적이라 여기며, 항상 A(각성) 수치를 중립(0 근처)으로 유지하려는 평정심을 가짐."
+    "A": "신중, 세심, 타인 의식, 조화 중시, 내면 여림.",
+    "B": "자유분방, 주관 뚜렷, 마이페이스 유지.",
+    "O": "활달, 승부욕, 회복탄력성 높음, 대화 주도.",
+    "AB": "합리적, 분석적, 공사 구분, 평정심 유지."
 }
 
 # --- [유틸리티 함수] ---
@@ -37,134 +32,115 @@ def get_llm(temperature=0.2, lora_name: str = None):
         openai_api_base=settings.LLM_URL,
         openai_api_key=settings.LLM_API_KEY,
         temperature=temperature,
-        presence_penalty=0.6,
-        frequency_penalty=0.5,
         max_retries=2,
-        timeout=30,
+        timeout=60,
         extra_body=extra_body
     )
 
 def clamp(v):
-    try:
-        return max(-1.0, min(1.0, float(v)))
-    except:
-        return 0.0
-
-def has_chinese(text: str) -> bool:
-    return bool(re.search(r'[\u4e00-\u9fff]', text))
+    try: return max(-1.0, min(1.0, float(v)))
+    except: return 0.0
 
 def parse_json_response(content: str) -> Dict[str, Any]:
     try:
-        match = re.search(r"\{.*\}", content, re.DOTALL)
-        if match: return json.loads(match.group(), strict=False)
+        # 마크다운 코드 블록(```json)이 섞여있어도 내용물만 추출
+        content = content.replace("```json", "").replace("```", "").strip()
+        
+        # 가장 바깥쪽 중괄호 {} 사이의 내용을 찾음
+        match = re.search(r"(\{.*\})", content, re.DOTALL)
+        if match:
+            return json.loads(match.group(1), strict=False)
         return {}
-    except: return {}
+    except:
+        return {}
 
-async def safe_json_call(llm: ChatOpenAI, messages: List[BaseMessage], max_retries: int = 5) -> Dict[str, Any]:
-    """중국어 한자 감지 및 JSON 파싱 실패 시 재시도 로직"""
+async def safe_json_call(llm: ChatOpenAI, messages: List[BaseMessage], node_name: str, max_retries: int = 3) -> Dict[str, Any]:
+    """JSON 파싱 실패나 호출 에러 발생 시 모델의 응답 원문을 로그에 포함합니다."""
     for i in range(max_retries):
-        res = await llm.ainvoke(messages)
-        if has_chinese(res.content):
-            logger.warning(f"⚠️ 중국어 감지 ({i+1}/{max_retries}). 재시도...")
-            continue
-        data = parse_json_response(res.content)
-        if data: return data
-        logger.warning(f"⚠️ JSON 파싱 실패 ({i+1}/{max_retries}). 재시도...")
+        try:
+            res = await llm.ainvoke(messages)
+            data = parse_json_response(res.content)
+            
+            if data: 
+                return data
+            
+            # JSON 파싱은 실패했지만 응답은 온 경우: 원문 출력
+            logger.warning(f"⚠️ [{node_name}] 파싱 실패 ({i+1}/{max_retries}). 원문: {res.content}...")
+            
+        except Exception as e:
+            # API 호출 자체가 실패한 경우
+            logger.error(f"❌ [{node_name}] 호출 에러: {str(e)}")
+            
     return {}
 
-# --- [노드 구현] ---
+# --- [노드 구현: 토큰 최적화 및 간결화] ---
 
 async def appraisal_node(state: SupporterState):
-    """사용자 입력 분석 노드: 의도와 PAD 추출"""
+    """사용자 입력 분석: 의도와 PAD 추출"""
     llm = get_llm(temperature=0.1)
-    sys = f"너는 노련한 심리 분석가야. 대화 내용을 듣고 사용자의 숨겨진 의도와 감정 상태를 수치화해.\n{PAD_DEFINITION}"
-    prompt = f"사용자 메시지: '{state['input_text']}'\n\nJSON으로만 응답해:\n{{\"p\":수치, \"a\":수치, \"d\":수치, \"intent\":\"상세의도\"}}"
+    # 지시사항을 간결하게 압축
+    sys = f"심리 분석가. JSON으로만 응답. 마크다운 금지.\n{PAD_DEFINITION}"
+    prompt = f"분석 대상: '{state['input_text']}'\n형식: {{\"p\":수치, \"a\":수치, \"d\":수치, \"intent\":\"한 문장 요약\"}}"
     
-    data = await safe_json_call(llm, [SystemMessage(content=sys), HumanMessage(content=prompt)])
+    data = await safe_json_call(llm, [SystemMessage(content=sys), HumanMessage(content=prompt)], "AppraisalNode")
     return {
         "user_pad": {"p": clamp(data.get("p")), "a": clamp(data.get("a")), "d": clamp(data.get("d"))},
         "user_intent": data.get("intent", "일반 대화")
     }
 
 async def orchestrator_node(state: SupporterState):
-    """도구 사용 판단 노드"""
+    """도구 사용 판단"""
     llm = get_llm(temperature=0.1)
     has_info = bool(state.get("search_results") and state.get("search_results") != "None")
-    sys = f"너는 판단관이야. 활성 도구: {state.get('enabled_tools')}"
-    prompt = f"의도: {state['user_intent']}\n입력: {state['input_text']}\n이미 정보 있음: {has_info}\n\nJSON 응답:\n{{\"thought\":\"판단이유\", \"tool_required\":true/false}}"
+    sys = "도구 판단관. JSON으로만 응답. 마크다운 금지."
+    prompt = f"의도: {state['user_intent']}\n이미 정보 있음: {has_info}\n형식: {{\"thought\":\"이유(짧게)\", \"tool_required\":true/false}}"
     
-    data = await safe_json_call(llm, [SystemMessage(content=sys), HumanMessage(content=prompt)])
+    data = await safe_json_call(llm, [SystemMessage(content=sys), HumanMessage(content=prompt)], "OrchestratorNode")
     return {"internal_thought": data.get("thought", ""), "tool_required": data.get("tool_required", False)}
 
 async def emotion_node(state: SupporterState):
-    """AI 감정 업데이트 노드: 혈액형 성향 반영 및 관성 적용"""
+    """AI 감정 업데이트"""
     llm = get_llm(temperature=0.3)
     blood = state.get("blood_type", "A")
     disposition = BLOOD_TYPE_DISPOSITION.get(blood, "")
     
-    sys = f"""너는 AI의 자아와 감정을 담당하는 엔진이야.
-{PAD_DEFINITION}
-[성향 가이드]
-{blood}형 특징: {disposition}
-
-[감정 변화 규칙]
-1. 감정적 관성: 특별한 자극(충격적인 뉴스, 강한 감정 표현 등)이 없다면 PAD 수치를 현재 {state['ai_pad']}에서 ±0.1 이내로 매우 보수적으로 변경해.
-2. 성향 일치: 자신의 성향에 따라 외부 자극을 수용하거나 튕겨내도록 계산해."""
-
-    prompt = f"사용자 PAD: {state['user_pad']}\n입력내용: '{state['input_text']}'\n\nJSON 응답:\n{{\"p\":수치, \"a\":수치, \"d\":수치, \"reason\":\"변화이유\"}}"
+    sys = f"감정 엔진. 성향: {disposition}\nJSON으로만 응답. 마크다운 금지.\n{PAD_DEFINITION}"
+    prompt = f"현재 PAD: {state['ai_pad']}\n사용자 PAD: {state['user_pad']}\n형식: {{\"p\":수치, \"a\":수치, \"d\":수치, \"reason\":\"짧은 요약\"}}"
     
-    data = await safe_json_call(llm, [SystemMessage(content=sys), HumanMessage(content=prompt)])
+    data = await safe_json_call(llm, [SystemMessage(content=sys), HumanMessage(content=prompt)], "EmotionNode")
     return {
         "ai_pad": {"p": clamp(data.get("p")), "a": clamp(data.get("a")), "d": clamp(data.get("d"))},
         "internal_thought": data.get("reason", "")
     }
 
 async def expression_node(state: SupporterState):
-    """최종 응답 생성 노드: 성향 + 현재 기분(PAD) 결합"""
+    """최종 응답 생성"""
     blood = state.get("blood_type", "A")
     retry_count = state.get("retry_count", 0)
     llm = get_llm(temperature=(0.7 if retry_count == 0 else 0.9), lora_name=blood)
     
     disposition = BLOOD_TYPE_DISPOSITION.get(blood, "")
     ai_pad = state['ai_pad']
+    mood = f"P:{ai_pad['p']:.1f}, A:{ai_pad['a']:.1f}, D:{ai_pad['d']:.1f}"
+
+    sys = f"너는 {blood}형 친구({disposition})야. 현재 기분({mood}) 반영. 반말로 짧게 답해. JSON 응답. 마크다운 금지."
     
-    # PAD 수치에 따른 현재 내면 상태 요약 (프롬프트 주입용)
-    mood_status = f"현재 기분(P)은 {'매우 좋음' if ai_pad['p'] > 0.5 else '우울함' if ai_pad['p'] < -0.5 else '평온함'}이고, " \
-                  f"에너지(A)는 {'넘침' if ai_pad['a'] > 0.5 else '차분함' if ai_pad['a'] < -0.5 else '안정적임'}이며, " \
-                  f"자신감(D)은 {'충만함' if ai_pad['d'] > 0.5 else '위축됨' if ai_pad['d'] < -0.5 else '보통임'}."
-
-    sys = f"""너는 {blood}형 성향을 가진 친구야. 
-[핵심 성향]
-{disposition}
-
-[현재 상태]
-{mood_status}
-기억: {state.get('long_term_memory')}
-요약: {state.get('summary')}
-
-[응답 규칙]
-1. '반말' 사용.
-2. 너의 말투와 단어 선택은 반드시 [핵심 성향]과 [현재 상태]의 결합으로 나타나야 해.
-3. 기분이 어떠냐는 질문에는 현재 기분 상태({mood_status})를 너의 성향대로 표현해.
-4. 짧게 1~2문장으로 답해."""
-
-    format_instr = "\nJSON 구조로만 답변해:\n{\"text\":\"대사\", \"emotion\":\"smile/sad/angry/neutral/excited\", \"action\":\"nod/wave/none\"}"
+    messages = [SystemMessage(content=sys)] + state.get("messages", [])[-4:]
+    messages.append(HumanMessage(content=f"입력: {state['input_text']}\n형식: {{\"text\":\"대사\", \"emotion\":\"smile/sad/angry/neutral\", \"action\":\"nod/none\"}}"))
     
-    messages = [SystemMessage(content=sys)] + state.get("messages", [])[-4:] + [HumanMessage(content=f"입력: {state['input_text']}\n{format_instr}")]
-    
-    data = await safe_json_call(llm, messages)
+    data = await safe_json_call(llm, messages, "ExpressionNode")
     return {"final_output": data}
 
 async def reflection_node(state: SupporterState):
-    """성찰 노드: 인격 일관성 검수"""
+    """성찰 노드: 일관성 검수"""
     llm = get_llm(temperature=0.1)
     blood = state.get("blood_type", "A")
     disposition = BLOOD_TYPE_DISPOSITION.get(blood, "")
     
-    sys = f"인격 검수관. {blood}형 성향({disposition})과 현재 기분({state['ai_pad']})에 비추어 답변이 모순되는지 체크해."
-    prompt = f"답변: '{state['final_output'].get('text')}'\n\nJSON 응답:\n{{\"is_valid\":true/false, \"reason\":\"이유\", \"fix_hint\":\"수정방향\"}}"
+    sys = "인격 검수관. JSON 응답. 마크다운 금지."
+    prompt = f"성향: {disposition}\n상태: {state['ai_pad']}\n답변: '{state['final_output'].get('text')}'\n형식: {{\"is_valid\":true/false, \"reason\":\"짧은 이유\", \"fix_hint\":\"간결한 방향\"}}"
     
-    data = await safe_json_call(llm, [SystemMessage(content=sys), HumanMessage(content=prompt)])
+    data = await safe_json_call(llm, [SystemMessage(content=sys), HumanMessage(content=prompt)], "ReflectionNode")
     return {
         "reflection_valid": data.get("is_valid", True),
         "internal_thought": data.get("fix_hint", ""),

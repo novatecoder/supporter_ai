@@ -28,6 +28,16 @@ def route_after_reflection(state: SupporterState):
     
     return "pass" # 횟수 초과 시 강제 통과
 
+def route_after_orchestrator(state: SupporterState):
+    """도구 사용 여부 및 루프 방지 로직 추가"""
+    if state.get("tool_required"):
+        # 도구 사용 횟수도 retry_count를 활용하거나 별도의 카운터를 둡니다.
+        # 여기서는 간단히 retry_count가 5회 이상이면 강제 종료하도록 설정해 보겠습니다.
+        if state.get("retry_count", 0) >= 5:
+            return "no_tool"
+        return "tool"
+    return "no_tool"
+
 async def create_supporter_workflow():
     workflow = StateGraph(SupporterState)
 

@@ -36,28 +36,38 @@ async def load_memory_node(state: SupporterState):
         "ai_pad": ai_pad,
         "long_term_memory": ltm_context,
         "blood_type": state.get("blood_type") or (data.get("blood_type") if raw_data else "A"),
-        "retry_count": 0 # 매 턴마다 카운트 초기화
+        "retry_count": 0
     }
 
 async def update_history_node(state: SupporterState):
     """메시지 이력을 업데이트하는 로직 노드"""
     messages = state.get("messages", [])
     new_user_msg = HumanMessage(content=state["input_text"])
-    new_ai_msg = AIMessage(content=state.get("final_output", {}).get("text", ""))
+    
+    ai_text = state.get("final_output", {}).get("text", "")
+    new_ai_msg = AIMessage(content=ai_text)
+    
     return {"messages": messages + [new_user_msg, new_ai_msg]}
 
 async def summarize_node(state: SupporterState):
-    """중요도를 판별하고 요약하는 노드 (JSON 파싱 재시도 필요)"""
+    """대화 요약 및 중요 기억 추출 노드 (토크나이저 최적화)"""
     messages = state.get("messages", [])
     if len(messages) < 6: return {}
 
     llm = get_llm(temperature=0.1)
-    sys = "기억 전략가. 대화 요약 및 중요도(0-10) 판별."
-    prompt = f"대상: {messages[-4:]}\n형식: {{\"summary\":\"요약\", \"importance\":8, \"key_fact\":\"사실\"}}"
-
-    data = await safe_json_call(llm, [SystemMessage(content=sys), HumanMessage(content=prompt)])
     
-    importance = int(data.get("importance", 0))
+    # [수정] 프롬프트 경량화 및 마크다운 금지 추가
+    sys = "기억 전략가. JSON 응답. 마크다운 금지."
+    # summary와 key_fact를 아주 짧게 쓰도록 유도
+    prompt = f"대상: {messages[-4:]}\n형식: {{\"summary\":\"한 문장 요약\", \"importance\":0~10, \"key_fact\":\"핵심사실(짧게)\"}}"
+
+    data = await safe_json_call(llm, [SystemMessage(content=sys), HumanMessage(content=prompt)], "SummarizeNode")
+    
+    try:
+        importance = int(data.get("importance", 0))
+    except:
+        importance = 0
+
     if importance >= 7 and data.get("key_fact"):
         await save_memory_to_db(state["user_id"], data["key_fact"], [0.0]*1024, float(importance/10))
         logger.info(f"💾 중요 기억 저장: {data['key_fact']}")
